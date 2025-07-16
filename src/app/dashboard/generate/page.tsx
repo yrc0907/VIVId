@@ -7,7 +7,8 @@ import { RefreshCw, Loader2, Download, Zap } from "lucide-react";
 import Link from "next/link";
 import DraggableCards, { CardItem } from "@/components/DraggableCards";
 import CardCounter from "@/components/CardCounter";
-import { generatePPTOutline, generatePPTOutlineStream } from "@/services/ai.service";
+import { generatePPTOutline, generatePPTOutlineStream, hasNetworkError } from "@/services/ai.service";
+import NetworkErrorAlert from "@/components/NetworkErrorAlert";
 
 // 用于备用的示例大纲模板，当API调用失败时使用
 const fallbackTemplates = {
@@ -51,6 +52,8 @@ export default function GeneratePage() {
   const [error, setError] = useState<string | null>(null);
   const [isUsingFallback, setIsUsingFallback] = useState(false);
   const [useStreamMode, setUseStreamMode] = useState(true);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [hasNetworkErrorState, setHasNetworkErrorState] = useState(false);
 
   // Handle input change
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -71,11 +74,51 @@ export default function GeneratePage() {
     return [`${prompt}主题概述`, ...template];
   };
 
+  // 处理网络错误
+  const handleNetworkError = (sessionId: string) => {
+    setHasNetworkErrorState(true);
+    setCurrentSessionId(sessionId);
+    setIsGenerating(false);
+  };
+
+  // 重试生成
+  const handleRetryGeneration = (sessionId: string) => {
+    if (!sessionId) return;
+
+    setHasNetworkErrorState(false);
+    setIsGenerating(true);
+
+    try {
+      // 继续生成
+      generatePPTOutlineStream(
+        inputValue || "", // 如果输入为空，使用空字符串
+        handleStreamItem,
+        sessionId,
+        handleNetworkError
+      ).catch((err) => {
+        console.error("重试生成失败:", err);
+        setError("重试失败，请稍后再试");
+        setIsGenerating(false);
+      });
+    } catch (err) {
+      console.error("重试生成失败:", err);
+      setError("重试失败，请稍后再试");
+      setIsGenerating(false);
+    }
+  };
+
   // 处理流式生成时的每个大纲项
-  const handleStreamItem = (item: string, isDone: boolean) => {
+  const handleStreamItem = (item: string, isDone: boolean, isRecoveredItem?: boolean) => {
     if (!item && isDone) return; // 如果是结束信号但没有内容，则忽略
 
     setCards(prevCards => {
+      // 对于恢复的项目，检查是否已存在
+      if (isRecoveredItem) {
+        // 检查是否已有此项
+        const exists = prevCards.some(card => card.content === item);
+        if (exists) return prevCards;
+      }
+
       // 为新项目创建唯一ID
       const newItemId = `card-${Date.now()}-${prevCards.length}`;
 
@@ -103,12 +146,19 @@ export default function GeneratePage() {
     setIsGenerating(true);
     setError(null);
     setIsUsingFallback(false);
+    setHasNetworkErrorState(false);
     setCards([]); // 清空之前的卡片，准备新生成
 
     try {
       if (useStreamMode) {
         // 使用流式API生成
-        await generatePPTOutlineStream(inputValue.trim(), handleStreamItem);
+        const sessionId = await generatePPTOutlineStream(
+          inputValue.trim(),
+          handleStreamItem,
+          undefined,
+          handleNetworkError
+        );
+        setCurrentSessionId(sessionId);
       } else {
         // 使用非流式API生成
         const outlineItems = await generatePPTOutline(inputValue.trim());
@@ -206,6 +256,15 @@ export default function GeneratePage() {
         <p className="text-gray-400 mb-8 md:mb-10">输入主题，AI将为您生成专业的PPT大纲</p>
 
         <div className="w-full">
+          {/* 网络错误提示 */}
+          {hasNetworkErrorState && currentSessionId && (
+            <NetworkErrorAlert
+              visible={true}
+              sessionId={currentSessionId}
+              onRetry={handleRetryGeneration}
+            />
+          )}
+
           <div className="relative mb-6">
             <Input
               className="bg-gray-900 border-gray-700 p-4 pl-4 pr-36 md:pr-48 w-full rounded-lg text-white h-14 md:h-16 text-base"

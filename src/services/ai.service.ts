@@ -11,6 +11,27 @@ const SYSTEM_PROMPT = `你是一位专业的PPT大纲规划专家，擅长为各
 每个要点应该简洁明了，不超过15个字，适合作为PPT的章节标题。
 不要使用编号，只需返回要点列表，每行一个要点。`;
 
+// 用于存储生成会话的状态
+interface StreamState {
+  prompt: string;
+  generatedItems: string[];
+  currentBuffer: string;
+  isCompleted: boolean;
+  lastActiveTime: number;
+  networkError?: boolean; // 添加网络错误标记
+}
+
+// 全局状态存储
+let streamSessions: Map<string, StreamState> = new Map();
+
+/**
+ * 生成会话ID
+ * @param prompt 用户输入的主题
+ */
+function generateSessionId(prompt: string): string {
+  return `session_${prompt.replace(/\s+/g, '_').substring(0, 20)}_${Date.now()}`;
+}
+
 /**
  * 使用Deepseek AI生成PPT大纲 (非流式)
  * @param prompt 用户输入的主题
@@ -70,112 +91,313 @@ export async function generatePPTOutline(prompt: string): Promise<string[]> {
  * 使用Deepseek AI流式生成PPT大纲
  * @param prompt 用户输入的主题
  * @param onItemGenerated 每生成一个大纲项时的回调
+ * @param sessionId 会话ID，用于恢复生成
+ * @param onNetworkError 网络错误回调
+ * @returns 返回会话ID，可用于恢复生成
  */
 export async function generatePPTOutlineStream(
   prompt: string,
-  onItemGenerated: (item: string, isDone: boolean) => void
-): Promise<void> {
+  onItemGenerated: (item: string, isDone: boolean, isRecoveredItem?: boolean) => void,
+  sessionId?: string,
+  onNetworkError?: (sessionId: string) => void
+): Promise<string> {
+  // 如果没有提供会话ID，生成一个新的
+  let currentSessionId = sessionId || generateSessionId(prompt);
+  let existingSession = sessionId ? streamSessions.get(sessionId) : undefined;
+  let retryCount = 0;
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY = 2000; // 2秒后重试
+
   try {
     if (!API_KEY) {
       throw new Error('未配置API密钥，请在环境变量中设置NEXT_PUBLIC_DEEPSEEK_API_KEY');
     }
 
-    // 使用fetch进行流式请求
-    const response = await fetch(`${API_URL}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${API_KEY}`,
-        'Accept': 'text/event-stream',
-      },
-      body: JSON.stringify({
-        model: 'deepseek-chat',
-        messages: [
-          {
-            role: 'system',
-            content: SYSTEM_PROMPT
+    // 如果存在之前的会话，发送已生成的项目到UI
+    if (existingSession) {
+      // 如果存在网络错误，先重置
+      if (existingSession.networkError) {
+        existingSession.networkError = false;
+      }
+
+      // 恢复之前生成的项目
+      for (const item of existingSession.generatedItems) {
+        onItemGenerated(item, false, true); // 标记为恢复的项目
+      }
+
+      // 如果之前的会话已完成，直接返回
+      if (existingSession.isCompleted) {
+        onItemGenerated('', true); // 通知流结束
+        return currentSessionId;
+      }
+
+      console.log('继续之前的生成会话:', currentSessionId);
+    } else {
+      // 创建新会话
+      existingSession = {
+        prompt,
+        generatedItems: [],
+        currentBuffer: '',
+        isCompleted: false,
+        lastActiveTime: Date.now()
+      };
+      streamSessions.set(currentSessionId, existingSession);
+
+      // 首先添加主题概述
+      const overviewItem = `${prompt}主题概述`;
+      existingSession.generatedItems.push(overviewItem);
+      onItemGenerated(overviewItem, false);
+    }
+
+    // 重试机制
+    const executeWithRetry = async (): Promise<void> => {
+      try {
+        // 确保existingSession存在
+        if (!existingSession) {
+          existingSession = {
+            prompt,
+            generatedItems: [],
+            currentBuffer: '',
+            isCompleted: false,
+            lastActiveTime: Date.now()
+          };
+          streamSessions.set(currentSessionId, existingSession);
+        }
+
+        // 创建基于已生成内容的提示
+        let systemPromptWithContext = SYSTEM_PROMPT;
+        if (existingSession && existingSession.generatedItems.length > 1) {
+          // 如果已经生成了一些内容，添加到上下文中
+          const generatedContent = existingSession.generatedItems.slice(1).join('\n'); // 跳过主题概述
+          systemPromptWithContext = `${SYSTEM_PROMPT}\n\n你已经生成了以下内容，请继续生成更多要点:\n${generatedContent}`;
+        }
+
+        // 使用fetch进行流式请求
+        const response = await fetch(`${API_URL}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${API_KEY}`,
+            'Accept': 'text/event-stream',
           },
-          {
-            role: 'user',
-            content: `请为"${prompt}"主题设计一个PPT大纲。`
-          }
-        ],
-        temperature: 0.7,
-        max_tokens: 800,
-        stream: true
-      })
-    });
+          body: JSON.stringify({
+            model: 'deepseek-chat',
+            messages: [
+              {
+                role: 'system',
+                content: systemPromptWithContext
+              },
+              {
+                role: 'user',
+                content: `请为"${prompt}"主题设计一个PPT大纲。${existingSession.generatedItems.length > 1 ? '继续生成，不要重复已有内容。' : ''}`
+              }
+            ],
+            temperature: 0.7,
+            max_tokens: 800,
+            stream: true
+          })
+        });
 
-    if (!response.ok) {
-      throw new Error(`API请求失败: ${response.status} ${response.statusText}`);
-    }
+        if (!response.ok) {
+          throw new Error(`API请求失败: ${response.status} ${response.statusText}`);
+        }
 
-    if (!response.body) {
-      throw new Error('响应体为空');
-    }
+        if (!response.body) {
+          throw new Error('响应体为空');
+        }
 
-    // 首先添加主题概述
-    onItemGenerated(`${prompt}主题概述`, false);
+        // 处理流式响应
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = existingSession.currentBuffer || '';
+        let currentItem = '';
+        const itemPattern = /^(?:\d+\.\s*|\*\s*|-\s*|\s*)([^\n]+)/;
 
-    // 处理流式响应
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder('utf-8');
-    let buffer = '';
-    let currentItem = '';
-    const itemPattern = /^(?:\d+\.\s*|\*\s*|-\s*|\s*)([^\n]+)/;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+          const chunk = decoder.decode(value);
+          buffer += chunk;
 
-      const chunk = decoder.decode(value);
-      buffer += chunk;
+          // 更新会话状态
+          existingSession.lastActiveTime = Date.now();
+          existingSession.currentBuffer = buffer;
 
-      // 解析响应中的事件
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
+          // 解析响应中的事件
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          existingSession.currentBuffer = buffer;
 
-      for (const line of lines) {
-        if (line.startsWith('data:') && !line.includes('[DONE]')) {
-          try {
-            const data = JSON.parse(line.substring(5));
-            const content = data.choices[0]?.delta?.content || '';
+          for (const line of lines) {
+            if (line.startsWith('data:') && !line.includes('[DONE]')) {
+              try {
+                const data = JSON.parse(line.substring(5));
+                const content = data.choices[0]?.delta?.content || '';
 
-            currentItem += content;
+                currentItem += content;
 
-            // 检查是否是完整的行（包含换行符）
-            if (content.includes('\n')) {
-              const items = currentItem.split('\n');
-              currentItem = items.pop() || ''; // 最后一个可能不完整
+                // 检查是否是完整的行（包含换行符）
+                if (content.includes('\n')) {
+                  const items = currentItem.split('\n');
+                  currentItem = items.pop() || ''; // 最后一个可能不完整
 
-              for (const item of items) {
-                const trimmed = item.trim();
-                if (trimmed) {
-                  const match = trimmed.match(itemPattern);
-                  if (match && match[1]) {
-                    onItemGenerated(match[1].trim(), false);
+                  for (const item of items) {
+                    const trimmed = item.trim();
+                    if (trimmed) {
+                      const match = trimmed.match(itemPattern);
+                      if (match && match[1]) {
+                        const newItem = match[1].trim();
+                        // 检查是否已存在，避免重复
+                        if (!existingSession.generatedItems.includes(newItem)) {
+                          existingSession.generatedItems.push(newItem);
+                          onItemGenerated(newItem, false);
+                        }
+                      }
+                    }
                   }
                 }
+              } catch (e) {
+                console.warn('解析事件数据失败:', e);
               }
+            } else if (line.includes('[DONE]')) {
+              // 检查是否还有未处理的项
+              if (currentItem.trim()) {
+                const match = currentItem.trim().match(itemPattern);
+                if (match && match[1]) {
+                  const lastItem = match[1].trim();
+                  // 检查是否已存在，避免重复
+                  if (!existingSession.generatedItems.includes(lastItem)) {
+                    existingSession.generatedItems.push(lastItem);
+                    onItemGenerated(lastItem, true); // 最后一项
+                  } else {
+                    onItemGenerated('', true); // 通知流结束
+                  }
+                }
+              } else {
+                onItemGenerated('', true); // 通知流结束
+              }
+
+              // 标记会话完成
+              existingSession.isCompleted = true;
+              existingSession.currentBuffer = '';
+
+              // 清理超过1小时的会话
+              cleanupOldSessions();
             }
-          } catch (e) {
-            console.warn('解析事件数据失败:', e);
-          }
-        } else if (line.includes('[DONE]')) {
-          // 检查是否还有未处理的项
-          if (currentItem.trim()) {
-            const match = currentItem.trim().match(itemPattern);
-            if (match && match[1]) {
-              onItemGenerated(match[1].trim(), true); // 最后一项
-            }
-          } else {
-            onItemGenerated('', true); // 通知流结束
           }
         }
+      } catch (error) {
+        console.error(`流式调用失败 (尝试 ${retryCount + 1}/${MAX_RETRIES}):`, error);
+
+        // 更新会话状态
+        if (existingSession) {
+          existingSession.lastActiveTime = Date.now();
+        }
+
+        // 如果尝试次数未达到最大值，则重试
+        if (retryCount < MAX_RETRIES) {
+          retryCount++;
+          console.log(`${RETRY_DELAY}毫秒后重试...`);
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+          return executeWithRetry();
+        } else {
+          // 标记为网络错误
+          if (existingSession) {
+            existingSession.networkError = true;
+
+            // 调用网络错误回调
+            if (onNetworkError) {
+              onNetworkError(currentSessionId);
+            }
+          }
+          throw new Error('多次重试后仍然失败，请检查网络连接');
+        }
       }
-    }
+    };
+
+    // 执行生成（带重试）
+    await executeWithRetry();
+
+    return currentSessionId;
   } catch (error) {
     console.error('流式调用Deepseek API失败:', error);
     throw error;
   }
+}
+
+/**
+ * 检查会话是否有网络错误
+ * @param sessionId 会话ID
+ * @returns 如果有网络错误则返回true，否则返回false
+ */
+export function hasNetworkError(sessionId: string): boolean {
+  const session = streamSessions.get(sessionId);
+  return session ? !!session.networkError : false;
+}
+
+/**
+ * 继续之前中断的生成会话
+ * @param sessionId 会话ID
+ * @param onItemGenerated 回调函数
+ * @param onNetworkError 网络错误回调
+ * @returns 如果会话存在则返回true，否则返回false
+ */
+export function resumeGeneration(
+  sessionId: string,
+  onItemGenerated: (item: string, isDone: boolean, isRecoveredItem?: boolean) => void,
+  onNetworkError?: (sessionId: string) => void
+): boolean {
+  const session = streamSessions.get(sessionId);
+
+  if (!session) {
+    return false;
+  }
+
+  // 如果会话已完成，只发送已有项目
+  if (session.isCompleted) {
+    for (const item of session.generatedItems) {
+      onItemGenerated(item, false, true);
+    }
+    onItemGenerated('', true); // 通知流结束
+    return true;
+  }
+
+  // 如果会话未完成，尝试继续生成
+  try {
+    generatePPTOutlineStream(session.prompt, onItemGenerated, sessionId, onNetworkError)
+      .catch(err => console.error('恢复生成失败:', err));
+    return true;
+  } catch (error) {
+    console.error('恢复生成会话失败:', error);
+    return false;
+  }
+}
+
+/**
+ * 清理旧会话
+ */
+function cleanupOldSessions(): void {
+  const now = Date.now();
+  const ONE_HOUR = 60 * 60 * 1000;
+
+  for (const [sessionId, session] of streamSessions.entries()) {
+    if (now - session.lastActiveTime > ONE_HOUR) {
+      streamSessions.delete(sessionId);
+    }
+  }
+}
+
+/**
+ * 获取所有活跃会话
+ * @returns 所有活跃会话列表
+ */
+export function getActiveSessions(): { id: string, prompt: string, itemsCount: number, isCompleted: boolean }[] {
+  return Array.from(streamSessions.entries())
+    .map(([id, session]) => ({
+      id,
+      prompt: session.prompt,
+      itemsCount: session.generatedItems.length,
+      isCompleted: session.isCompleted
+    }));
 } 
