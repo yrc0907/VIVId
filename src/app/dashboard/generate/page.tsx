@@ -3,11 +3,11 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { RefreshCw, Loader2, Download } from "lucide-react";
+import { RefreshCw, Loader2, Download, Zap } from "lucide-react";
 import Link from "next/link";
 import DraggableCards, { CardItem } from "@/components/DraggableCards";
 import CardCounter from "@/components/CardCounter";
-import { generatePPTOutline } from "@/services/ai.service";
+import { generatePPTOutline, generatePPTOutlineStream } from "@/services/ai.service";
 
 // 用于备用的示例大纲模板，当API调用失败时使用
 const fallbackTemplates = {
@@ -50,6 +50,7 @@ export default function GeneratePage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isUsingFallback, setIsUsingFallback] = useState(false);
+  const [useStreamMode, setUseStreamMode] = useState(true);
 
   // Handle input change
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -70,6 +71,28 @@ export default function GeneratePage() {
     return [`${prompt}主题概述`, ...template];
   };
 
+  // 处理流式生成时的每个大纲项
+  const handleStreamItem = (item: string, isDone: boolean) => {
+    if (!item && isDone) return; // 如果是结束信号但没有内容，则忽略
+
+    setCards(prevCards => {
+      // 为新项目创建唯一ID
+      const newItemId = `card-${Date.now()}-${prevCards.length}`;
+
+      // 如果是新项目，添加到卡片列表
+      if (item) {
+        return [...prevCards, { id: newItemId, content: item }];
+      }
+      return prevCards;
+    });
+
+    // 如果是最后一项，完成生成
+    if (isDone) {
+      setIsGenerating(false);
+      setInputValue("");
+    }
+  };
+
   // Handle generate button click
   const handleGenerateClick = async () => {
     if (!inputValue.trim()) {
@@ -80,19 +103,26 @@ export default function GeneratePage() {
     setIsGenerating(true);
     setError(null);
     setIsUsingFallback(false);
+    setCards([]); // 清空之前的卡片，准备新生成
 
     try {
-      // 调用实际的AI服务生成大纲
-      const outlineItems = await generatePPTOutline(inputValue.trim());
+      if (useStreamMode) {
+        // 使用流式API生成
+        await generatePPTOutlineStream(inputValue.trim(), handleStreamItem);
+      } else {
+        // 使用非流式API生成
+        const outlineItems = await generatePPTOutline(inputValue.trim());
 
-      // 将大纲转换为卡片
-      const newCards: CardItem[] = outlineItems.map((item, index) => ({
-        id: `card-${Date.now()}-${index}`,
-        content: item
-      }));
+        // 将大纲转换为卡片
+        const newCards: CardItem[] = outlineItems.map((item, index) => ({
+          id: `card-${Date.now()}-${index}`,
+          content: item
+        }));
 
-      setCards(newCards);
-      setInputValue("");
+        setCards(newCards);
+        setInputValue("");
+        setIsGenerating(false);
+      }
     } catch (err) {
       console.error("生成大纲失败:", err);
 
@@ -109,7 +139,6 @@ export default function GeneratePage() {
 
       setCards(fallbackCards);
       setInputValue("");
-    } finally {
       setIsGenerating(false);
     }
   };
@@ -150,6 +179,11 @@ export default function GeneratePage() {
     // 清理
     URL.revokeObjectURL(url);
     document.body.removeChild(a);
+  };
+
+  // 切换流式生成模式
+  const toggleStreamMode = () => {
+    setUseStreamMode(prev => !prev);
   };
 
   return (
@@ -222,7 +256,7 @@ export default function GeneratePage() {
             </div>
           )}
 
-          <div className="flex justify-center">
+          <div className="flex flex-col md:flex-row gap-4 justify-center items-center">
             <Button
               size="lg"
               className="bg-gradient-to-r from-red-500 to-fuchsia-500 hover:from-red-600 hover:to-fuchsia-600 text-white font-bold py-3 px-6 w-full md:w-auto"
@@ -232,13 +266,37 @@ export default function GeneratePage() {
               {isGenerating ? (
                 <>
                   <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                  正在生成...
+                  {useStreamMode ? "正在生成中..." : "正在生成..."}
                 </>
               ) : (
                 "生成PPT大纲"
               )}
             </Button>
+
+            <Button
+              type="button"
+              variant={useStreamMode ? "default" : "outline"}
+              size="sm"
+              className={`flex items-center gap-2 px-3 transition-all ${useStreamMode
+                ? "bg-gradient-to-r from-red-600/80 to-fuchsia-600/80 text-white border-none"
+                : "border-gray-700 text-gray-400 hover:text-white hover:bg-gray-800"
+                }`}
+              onClick={toggleStreamMode}
+              disabled={isGenerating}
+            >
+              <Zap className={`h-4 w-4 ${useStreamMode ? "text-yellow-300" : "text-gray-400"}`} />
+              <span className="text-sm">流式生成</span>
+            </Button>
           </div>
+
+          {/* 说明文本 */}
+          {useStreamMode && (
+            <div className="mt-4 text-center">
+              <p className="text-gray-500 text-xs">
+                流式生成模式会实时显示生成结果，带来更好的交互体验
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </div>
