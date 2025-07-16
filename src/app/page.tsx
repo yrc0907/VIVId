@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { auth } from "@/auth";
 import Link from "next/link";
+import Navigation from "@/components/Navigation";
 
 export default async function Home() {
   const session = await auth();
@@ -10,6 +11,8 @@ export default async function Home() {
     <div className="container mx-auto py-12">
       <div className="max-w-3xl mx-auto text-center mb-12">
         <h1 className="text-4xl font-bold mb-4">Next.js Authentication Demo</h1>
+        <Navigation />
+
         <p className="text-xl text-muted-foreground">
           A simple authentication example using Next.js, Auth.js and shadcn/ui
         </p>
