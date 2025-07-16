@@ -9,6 +9,9 @@ import {
   DragEndEvent,
   DropAnimation,
   defaultDropAnimation,
+  DragStartEvent,
+  UniqueIdentifier,
+  MeasuringStrategy,
 } from '@dnd-kit/core';
 import {
   arrayMove,
@@ -17,6 +20,10 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
+import {
+  restrictToVerticalAxis,
+  restrictToParentElement,
+} from '@dnd-kit/modifiers';
 import { CSS } from '@dnd-kit/utilities';
 import { Pencil, Trash2, GripVertical } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -67,7 +74,7 @@ function SortableCard({
   // Fix the bouncing issue with proper transform handling
   const style = {
     transform: CSS.Translate.toString(transform ? {
-      x: transform.x,
+      x: 0, // Always 0 for x-axis to prevent horizontal movement
       y: transform.y,
       scaleX: 1,
       scaleY: 1,
@@ -220,6 +227,7 @@ export default function DraggableCards({
   const [cards, setCards] = useState<CardItem[]>([]);
   const [editingCardId, setEditingCardId] = useState<string | null>(null);
   const [editingContent, setEditingContent] = useState('');
+  const [activeId, setActiveId] = useState<UniqueIdentifier | null>(null);
 
   // Initialize cards only once on mount or when initialCards changes
   useEffect(() => {
@@ -238,9 +246,15 @@ export default function DraggableCards({
     })
   );
 
+  // Handle drag start
+  const handleDragStart = (event: DragStartEvent) => {
+    setActiveId(event.active.id);
+  };
+
   // Handle drag end event
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
+    setActiveId(null);
 
     if (active.id !== over?.id) {
       setCards((items) => {
@@ -321,7 +335,14 @@ export default function DraggableCards({
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
+        onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
+        measuring={{
+          droppable: {
+            strategy: MeasuringStrategy.Always
+          },
+        }}
+        modifiers={[restrictToVerticalAxis, restrictToParentElement]}
       >
         <SortableContext
           items={cards.map((card) => card.id)}
