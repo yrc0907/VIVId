@@ -1,13 +1,4 @@
-// 幻灯片类型定义，便于跨组件共享
+// 导入并重导出类型定义，以保持向后兼容性
+import { Slide, PPTData } from '@/types/slide.types';
 
-export interface Slide {
-  layout: string;
-  title: string;
-  content: string;
-  imageDescription: string;
-  imageUrl?: string;
-}
-
-export interface PPTData {
-  slides: Slide[];
-} 
+export type { Slide, PPTData }; 

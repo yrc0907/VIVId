@@ -1,33 +1,64 @@
 "use client";
 
-import { useState } from "react";
-import { usePathname } from "next/navigation";
-import { Sidebar } from "@/components/layout/Sidebar";
-import { Navbar } from "@/components/layout/Navbar";
-import { AnimatePresence } from "framer-motion";
-import { PageTransition } from "@/components/layout/PageTransition";
+import { Home, LayoutTemplate, Trash2, PlusCircle, Settings } from 'lucide-react';
+import { MainLayout } from '@/components/layout';
+import { NavConfig } from '@/types/layout.types';
 
+// 定义导航配置
+const dashboardNavigation: NavConfig = {
+  items: [
+    {
+      title: "Home",
+      href: "/dashboard",
+      icon: Home
+    },
+    {
+      title: "Generate",
+      href: "/dashboard/generate",
+      icon: PlusCircle
+    },
+    {
+      title: "Templates",
+      href: "/templates",
+      icon: LayoutTemplate
+    },
+    {
+      title: "Trash",
+      href: "/trash",
+      icon: Trash2
+    }
+  ],
+  footer: [
+    {
+      title: "Settings",
+      href: "/settings",
+      icon: Settings
+    }
+  ]
+};
+
+/**
+ * Dashboard布局
+ */
 export default function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const [isSidebarOpen, setSidebarOpen] = useState(false);
-  const pathname = usePathname();
-
   return (
-    <div className="flex h-screen bg-black text-white">
-      <Sidebar isOpen={isSidebarOpen} onClose={() => setSidebarOpen(false)} />
-      <div className="flex-1 flex flex-col">
-        <Navbar onMenuClick={() => setSidebarOpen(true)} />
-        <main className="flex-1 overflow-y-auto">
-          <AnimatePresence mode="wait">
-            <PageTransition key={pathname}>
-              {children}
-            </PageTransition>
-          </AnimatePresence>
-        </main>
-      </div>
-    </div>
+    <MainLayout
+      navigation={dashboardNavigation}
+      logoText="Vivid AI"
+      options={{
+        animation: true,
+        defaultCollapsed: false,
+        theme: {
+          primaryColor: '#ff0080',
+          contentPadding: '20px'
+        }
+      }}
+    >
+      {children}
+    </MainLayout>
   );
 }
