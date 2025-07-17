@@ -3,12 +3,20 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { RefreshCw, Loader2, Download, Zap } from "lucide-react";
+import { RefreshCw, Loader2, Download, Zap, Presentation, FileText } from "lucide-react";
 import Link from "next/link";
 import DraggableCards, { CardItem } from "@/components/DraggableCards";
 import CardCounter from "@/components/CardCounter";
-import { generatePPTOutline, generatePPTOutlineStream, hasNetworkError } from "@/services/ai.service";
+import {
+  generatePPTOutline,
+  generatePPTOutlineStream,
+  hasNetworkError,
+  generatePPTFromOutline,
+  generateStructuredPPT
+} from "@/services/ai.service";
 import NetworkErrorAlert from "@/components/NetworkErrorAlert";
+import PPTPreview from "@/components/PPTPreview";
+import { PPTData } from '@/utils/slideTypes';
 
 // 用于备用的示例大纲模板，当API调用失败时使用
 const fallbackTemplates = {
@@ -49,7 +57,12 @@ export default function GeneratePage() {
   const [cards, setCards] = useState<CardItem[]>([]);
   const [cardsCount, setCardsCount] = useState(0);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isGeneratingPPT, setIsGeneratingPPT] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pptError, setPptError] = useState<string | null>(null);
+  const [pptContent, setPptContent] = useState<string | null>(null);
+  const [structuredPPTData, setStructuredPPTData] = useState<PPTData | null>(null);
+  const [showPPTPreview, setShowPPTPreview] = useState(false);
   const [isUsingFallback, setIsUsingFallback] = useState(false);
   const [useStreamMode, setUseStreamMode] = useState(true);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
@@ -193,6 +206,90 @@ export default function GeneratePage() {
     }
   };
 
+  // 处理生成完整PPT按钮点击
+  const handleGenerateFullPPT = async () => {
+    if (cards.length === 0) {
+      setPptError("请先生成大纲，然后再生成PPT");
+      return;
+    }
+
+    setIsGeneratingPPT(true);
+    setPptError(null);
+    setPptContent(null);
+
+    try {
+      // 从卡片中提取大纲项目
+      const outlineItems = cards.map(card => card.content);
+
+      // 调用API生成结构化PPT数据
+      const pptData = await generateStructuredPPT(outlineItems);
+
+      // 保存结构化的PPT数据
+      setStructuredPPTData(pptData);
+
+      // 显示PPT预览
+      setShowPPTPreview(true);
+    } catch (err) {
+      console.error("生成PPT失败:", err);
+      setPptError("生成PPT失败，请稍后再试");
+    } finally {
+      setIsGeneratingPPT(false);
+    }
+  };
+
+  // 处理生成PPT内容按钮点击
+  const handleGeneratePPTContent = async () => {
+    if (cards.length === 0) {
+      setPptError("请先生成大纲，然后再生成PPT内容");
+      return;
+    }
+
+    setIsGeneratingPPT(true);
+    setPptError(null);
+    setPptContent(null);
+
+    try {
+      // 从卡片中提取大纲项目
+      const outlineItems = cards.map(card => card.content);
+
+      // 调用API生成PPT内容
+      const content = await generatePPTFromOutline(outlineItems);
+
+      // 保存生成的内容
+      setPptContent(content);
+    } catch (err) {
+      console.error("生成PPT内容失败:", err);
+      setPptError("生成PPT内容失败，请稍后再试");
+    } finally {
+      setIsGeneratingPPT(false);
+    }
+  };
+
+  // 导出PPT内容为Markdown文件
+  const handleExportPPTContent = () => {
+    if (!pptContent) return;
+
+    // 创建Blob对象
+    const blob = new Blob([pptContent], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+
+    // 创建下载链接并触发
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `PPT内容_${new Date().toLocaleDateString()}.md`;
+    document.body.appendChild(a);
+    a.click();
+
+    // 清理
+    URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  };
+
+  // 关闭PPT预览
+  const handleClosePPTPreview = () => {
+    setShowPPTPreview(false);
+  };
+
   // Handle cards change (from DraggableCards component)
   const handleCardsChange = (updatedCards: CardItem[]) => {
     setCards(updatedCards);
@@ -292,26 +389,104 @@ export default function GeneratePage() {
             </div>
           )}
 
-          {cards.length > 0 && (
+          {cards.length > 0 && !showPPTPreview && (
             <div className="my-8">
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-xl font-semibold text-white text-left">
                   PPT大纲 <span className="text-gray-400 text-sm font-normal">(可拖动调整顺序)</span>
                 </h2>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-gray-300 hover:text-white hover:bg-gray-800 flex items-center gap-2"
-                  onClick={handleExportOutline}
-                >
-                  <Download className="h-4 w-4" />
-                  <span>导出</span>
-                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-gray-300 hover:text-white hover:bg-gray-800 flex items-center gap-2"
+                    onClick={handleExportOutline}
+                  >
+                    <Download className="h-4 w-4" />
+                    <span>导出大纲</span>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="bg-gray-800 text-white hover:bg-gray-700 border-gray-700 flex items-center gap-2"
+                    onClick={handleGeneratePPTContent}
+                    disabled={isGeneratingPPT}
+                  >
+                    {isGeneratingPPT && !showPPTPreview ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <span>生成中...</span>
+                      </>
+                    ) : (
+                      <>
+                        <FileText className="h-4 w-4" />
+                        <span>生成PPT内容</span>
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="bg-blue-600 text-white hover:bg-blue-700 border-blue-700 flex items-center gap-2"
+                    onClick={handleGenerateFullPPT}
+                    disabled={isGeneratingPPT}
+                  >
+                    {isGeneratingPPT && !pptContent ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <span>生成中...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Presentation className="h-4 w-4" />
+                        <span>生成完整PPT</span>
+                      </>
+                    )}
+                  </Button>
+                </div>
               </div>
               <DraggableCards
                 initialCards={cards}
                 onCardsChange={handleCardsChange}
               />
+            </div>
+          )}
+
+          {/* PPT预览 */}
+          {showPPTPreview && structuredPPTData && (
+            <PPTPreview
+              pptData={structuredPPTData}
+              onClose={handleClosePPTPreview}
+            />
+          )}
+
+          {/* PPT生成错误提示 */}
+          {pptError && (
+            <div className="p-3 rounded-md mb-4 text-sm bg-red-900/30 text-red-200">
+              {pptError}
+            </div>
+          )}
+
+          {/* 生成的PPT内容 */}
+          {pptContent && !showPPTPreview && (
+            <div className="my-8">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-xl font-semibold text-white text-left">
+                  生成的PPT内容
+                </h2>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-gray-300 hover:text-white hover:bg-gray-800 flex items-center gap-2"
+                  onClick={handleExportPPTContent}
+                >
+                  <Download className="h-4 w-4" />
+                  <span>导出PPT内容</span>
+                </Button>
+              </div>
+              <div className="bg-gray-900 border border-gray-700 rounded-lg p-4 text-left text-gray-300 text-sm overflow-auto max-h-96 whitespace-pre-wrap">
+                {pptContent}
+              </div>
             </div>
           )}
 
